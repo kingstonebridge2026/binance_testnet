@@ -11,7 +11,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 # Pulls from Railway Variables; uses your provided keys as defaults
 BINANCE_API_KEY = os.getenv("BINANCE_KEY", "ZWHzZmOXxWwB6Qo2PXM5oiC799JidzTsXiLkcIVTWJLceMxjq3Qy0xPbph229M3Q")
 BINANCE_SECRET = os.getenv("BINANCE_SECRET", "QacEqE0bSlOvZitUSnybJaBTYalrRAG2nslB4aYCJraOtCsPUr2fQUxB5e0TsntL")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "8287625785:AAEr1IXBXadMg20hehUrwBoMEYaBBOY4OMU")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "8287625785:AAH5CzpIgBiDYWO3WGikKYSaTwgz0rgc2y0")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5665906172")
 
 SYMBOL = "BTC/USDT"
