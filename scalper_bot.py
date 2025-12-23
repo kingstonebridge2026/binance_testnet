@@ -209,5 +209,5 @@ if __name__ == "__main__":
     print("   python scalper_bot.py")
     print("="*50)
     
-    # Uncomment to run directly:
-    # trading_loop()
+    
+    trading_loop()
