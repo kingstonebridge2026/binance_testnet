@@ -1,7 +1,6 @@
-# requirements.txt - Lightweight version
-ccxt==4.2.85
-pandas==1.5.3  # Older but more stable version
-requests==2.31.0
-python-telegram-bot==20.7
-schedule==1.2.0
-numpy==1.24.3  # Specify numpy version
+ccxt>=4.2.85
+pandas>=2.2.0
+requests>=2.31.0
+python-telegram-bot>=20.7
+schedule>=1.2.0
+numpy>=2.1.0
