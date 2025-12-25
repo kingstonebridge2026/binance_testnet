@@ -15,7 +15,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5665906172")
 
 SYMBOL = "BTC/USDT"
 TIMEFRAME = "1m"
-POSITION_SIZE = 0.0001  # Min lot for 10$ realism
+POSITION_SIZE = 0.001  # Min lot for 10$ realism
 
 # Initialize Exchange
 exchange = ccxt.binance({
@@ -28,7 +28,7 @@ exchange.set_sandbox_mode(True)
 
 # Shared Bot State (Virtual Wallet)
 bot_state = {
-    "virtual_balance": 10.0,
+    "virtual_balance": 100.0,
     "realized_pnl": 0.0,
     "trades_count": 0,
     "last_price": 0.0,
