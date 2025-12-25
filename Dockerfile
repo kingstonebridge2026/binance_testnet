@@ -1,28 +1,20 @@
-
 FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-# Install only essential build tools
+# Install system tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements
-COPY requirements.txt .
+# 1. Install CPU-only Torch first (This is the big space saver)
+RUN pip install --no-cache-dir torch==2.2.0 --index-url https://download.pytorch.org/whl/cpu
 
-# Install CPU-optimized AI libraries to save space
+# 2. Install the rest of the requirements
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the bot code
+# 3. Copy the rest of the code
 COPY . .
 
 CMD ["python", "Sniper.py"]
-
-
-
-
-
-
-
-
