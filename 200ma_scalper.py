@@ -14,7 +14,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5665906172")
 
 SYMBOL = "BTC/USDT"
 TIMEFRAME = "1m"
-POSITION_SIZE = 0.0012  # Slightly above min to ensure it clears fees
+POSITION_SIZE = 0.0015  # Increased slightly for better fee clearance
 
 # Initialize Exchange
 exchange = ccxt.binance({
@@ -46,11 +46,11 @@ def calculate_rsi(prices, period=14):
 # ===== TELEGRAM COMMANDS =====
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     upnl = (bot_state['last_price'] - bot_state['entry_price']) * POSITION_SIZE if bot_state['in_position'] else 0
-    status = "📈 LONG" if bot_state['in_position'] else "😴 IDLE"
+    status = "🎯 LONG (In Trade)" if bot_state['in_position'] else "💤 SNIPING (Waiting)"
     msg = (f"📊 <b>Bot Status: {status}</b>\n"
            f"Price: ${bot_state['last_price']:,.2f}\n"
            f"RSI: {bot_state['last_rsi']:.2f}\n"
-           f"Unrealized: ${upnl:.4f}")
+           f"Unrealized P&L: ${upnl:.4f}")
     await update.message.reply_text(msg, parse_mode='HTML')
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,39 +63,40 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def execute_trade(side, price, application):
     try:
         if side == 'BUY':
-            # In Spot Testnet, sometimes market buy needs the "cost" in USDT
             await exchange.create_market_buy_order(SYMBOL, POSITION_SIZE)
             bot_state['in_position'] = True
             bot_state['entry_price'] = price
-            msg = f"🟢 <b>BUY ORDER</b>\nPrice: ${price:,.2f}"
+            msg = f"🟢 <b>SNIPER BUY</b>\nPrice: ${price:,.2f}\n<i>Waiting for +0.6% profit...</i>"
         else:
             await exchange.create_market_sell_order(SYMBOL, POSITION_SIZE)
             pnl = (price - bot_state['entry_price']) * POSITION_SIZE
-            fee = (POSITION_SIZE * price) * 0.001 # 0.1% Spot Fee
+            fee = (POSITION_SIZE * price) * 0.002 # Accounting for buy+sell fee
             net = pnl - fee
             bot_state['virtual_balance'] += net
             bot_state['realized_pnl'] += net
             bot_state['trades_count'] += 1
             bot_state['in_position'] = False
-            msg = f"🔴 <b>SELL ORDER</b>\nProfit: ${net:.4f}\nBalance: ${bot_state['virtual_balance']:.2f}"
+            icon = "✅" if net > 0 else "❌"
+            msg = f"{icon} <b>SNIPER SELL</b>\nNet Profit: ${net:.4f}\nBalance: ${bot_state['virtual_balance']:.2f}"
 
         await application.bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='HTML')
     except Exception as e:
-        print(f"Trade Error: {e}")
+        print(f"Execution Error: {e}")
 
 # ===== MAIN LOOP =====
 async def trading_loop(application):
-    print("🚀 SPOT SCALPER ACTIVE...")
+    print("🚀 SNIPER MODE ACTIVE - Patient Scalping...")
     while True:
         try:
-            ohlcv = await exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=30)
+            ohlcv = await exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=50)
             df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
             
+            # Use standard 14 period for more reliable signals
+            df['rsi'] = calculate_rsi(df['close'], 14)
             df['sma_20'] = df['close'].rolling(20).mean()
             df['std'] = df['close'].rolling(20).std()
-            df['upper'] = df['sma_20'] + (df['std'] * 1.3)
-            df['lower'] = df['sma_20'] - (df['std'] * 1.3)
-            df['rsi'] = calculate_rsi(df['close'], 3)
+            df['lower_band'] = df['sma_20'] - (df['std'] * 2.0)
+            df['upper_band'] = df['sma_20'] + (df['std'] * 2.0)
             
             ticker = await exchange.fetch_ticker(SYMBOL)
             bot_state['last_price'] = ticker['last']
@@ -104,16 +105,22 @@ async def trading_loop(application):
             l = df.iloc[-1]
 
             if not bot_state['in_position']:
-                # BUY if price is near lower band OR RSI is oversold
-                if l['close'] < l['lower'] or l['rsi'] < 40:
+                # ONLY BUY when price is actually low (Bottom of Band AND RSI < 35)
+                if l['close'] <= l['lower_band'] and l['rsi'] < 35:
                     await execute_trade('BUY', bot_state['last_price'], application)
             else:
-                profit = (bot_state['last_price'] - bot_state['entry_price']) / bot_state['entry_price']
-                # SELL if price hits upper band OR we have 0.3% profit
-                if l['close'] > l['upper'] or l['rsi'] > 80 or profit > 0.003:
+                profit_pct = (bot_state['last_price'] - bot_state['entry_price']) / bot_state['entry_price']
+                
+                # ONLY SELL if we actually covered fees (0.6% target)
+                # OR if RSI is extremely overbought
+                if profit_pct >= 0.006 or l['rsi'] > 75:
+                    await execute_trade('SELL', bot_state['last_price'], application)
+                
+                # Safety Stop Loss (1.5%)
+                elif profit_pct <= -0.015:
                     await execute_trade('SELL', bot_state['last_price'], application)
 
-            await asyncio.sleep(10)
+            await asyncio.sleep(15) # Check every 15s to save CPU
         except Exception as e:
             print(f"Loop error: {e}")
             await asyncio.sleep(10)
@@ -126,11 +133,11 @@ async def main():
     async with app:
         await app.initialize()
         await app.start()
-        # drop_pending_updates fixes the Conflict error
         await app.updater.start_polling(drop_pending_updates=True)
-        await app.bot.send_message(TELEGRAM_CHAT_ID, "⚡ <b>Spot Scalper Online</b>\nHigh-Frequency Mode")
+        await app.bot.send_message(TELEGRAM_CHAT_ID, "🎯 <b>Sniper Bot Online</b>\nMinimum profit target: 0.6%")
         await trading_loop(app)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
