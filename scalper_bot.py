@@ -7,10 +7,11 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ===== CONFIGURATION (Use Railway Variables or Replace) =====
-BINANCE_API_KEY = os.getenv("BINANCE_KEY", "YOUR_KEY_HERE")
-BINANCE_SECRET = os.getenv("BINANCE_SECRET", "YOUR_SECRET_HERE")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "YOUR_TOKEN_HERE")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "YOUR_CHAT_ID_HERE")
+BINANCE_API_KEY = os.getenv("BINANCE_KEY", "0NLIHcV6lIWDuCakzAAUSE2mq6BrxmDNHCn6l0lCPgq7AAFWcPiqkz2Q9eTbW9Ye")
+BINANCE_SECRET = os.getenv("BINANCE_SECRET", "5LVq1iHl5MRAS56SHsrMmx4wAqe1TvURAvNLrlUR4hGcru6F8CpMjRzJK8BqtNiF")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "8488789199:AAGDbx-hu2993dG5O6LJEiSN0nEpFWuVWwk")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "5665906172")
+
 
 SYMBOL = "BTC/USDT"
 TIMEFRAME = "1m"
