@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import asyncio
 import ccxt.async_support as ccxt
 import json
@@ -19,7 +20,6 @@ class Config:
     TELEGRAM_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
     TELEGRAM_CHAT_ID = "5665906172"
     
-    # Expanded to 20 High-Volume Pairs
     SYMBOLS = [
         "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", 
         "ADA/USDT", "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT",
@@ -29,13 +29,11 @@ class Config:
     
     BASE_POSITION_USD = 50.0  
     MAX_SLOTS = 15            
-    
     SEQUENCE_LENGTH = 60 
     INPUT_SIZE = 7 
-    
-    TARGET_PROFIT_NET = 0.006 # 0.6%
-    STOP_LOSS_PCT = 0.012    # 1.2%
-    AI_THRESHOLD = 0.55      # Slightly more aggressive for multi-coin
+    TARGET_PROFIT_NET = 0.006 
+    STOP_LOSS_PCT = 0.012    
+    AI_THRESHOLD = 0.52      # Adjusted slightly for initial testing
 
 # ==================== AI MODEL ====================
 class TemporalFusionTransformer(nn.Module):
@@ -62,6 +60,7 @@ class DeepAlphaBot:
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'}
         })
+        # Set to False if using Live Keys, True if using Testnet Keys
         self.exchange.set_sandbox_mode(True) 
         
         self.model = TemporalFusionTransformer(Config.INPUT_SIZE)
@@ -73,6 +72,50 @@ class DeepAlphaBot:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
         self.logger = logging.getLogger("AlphaBot")
 
+    def engineer_features(self, df):
+        df = df.copy()
+        df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
+        df['ema_7'] = ta.trend.ema_indicator(df['close'], window=7)
+        df['ema_25'] = ta.trend.ema_indicator(df['close'], window=25)
+        df['bb_w'] = ta.volatility.BollingerBands(df['close']).bollinger_wband()
+        df['zscore'] = (df['close'] - df['close'].rolling(20).mean()) / df['close'].rolling(20).std()
+        return df[['close', 'volume', 'rsi', 'ema_7', 'ema_25', 'bb_w', 'zscore']].dropna()
+
+    async def train_on_fly(self):
+        """Initial training on historical data so the model isn't random"""
+        self.logger.info("📥 Initializing AI Warm-up... Fetching history.")
+        all_data = []
+        for symbol in Config.SYMBOLS[:5]: # Train on top 5 for speed
+            ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=500)
+            df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'volume'])
+            features = self.engineer_features(df)
+            all_data.append(features.values)
+        
+        train_data = np.vstack(all_data)
+        self.scaler.fit(train_data) # Fit scaler ONCE here
+        
+        # Simple supervised learning setup
+        X = []
+        Y = []
+        scaled_data = self.scaler.transform(train_data)
+        for i in range(len(scaled_data) - Config.SEQUENCE_LENGTH - 1):
+            X.append(scaled_data[i:i+Config.SEQUENCE_LENGTH])
+            # Target: 1 if price goes up in next 5 mins, 0 if not
+            Y.append(1 if train_data[i+Config.SEQUENCE_LENGTH+1, 0] > train_data[i+Config.SEQUENCE_LENGTH, 0] else 0)
+        
+        X, Y = torch.FloatTensor(np.array(X)), torch.LongTensor(np.array(Y))
+        optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        criterion = nn.CrossEntropyLoss()
+
+        self.logger.info("🧠 Training AI on current market conditions...")
+        for epoch in range(10):
+            optimizer.zero_grad()
+            outputs = self.model(X)
+            loss = criterion(outputs, Y)
+            loss.backward()
+            optimizer.step()
+        self.logger.info("✅ Training complete. Model is now optimized.")
+
     async def send_telegram(self, message):
         url = f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/sendMessage"
         payload = {"chat_id": Config.TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
@@ -83,55 +126,46 @@ class DeepAlphaBot:
         except Exception as e:
             self.logger.error(f"Telegram Error: {e}")
 
-    def engineer_features(self, df):
-        df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
-        df['ema_7'] = ta.trend.ema_indicator(df['close'], window=7)
-        df['ema_25'] = ta.trend.ema_indicator(df['close'], window=25)
-        df['bb_w'] = ta.volatility.BollingerBands(df['close']).bollinger_wband()
-        df['zscore'] = (df['close'] - df['close'].rolling(20).mean()) / df['close'].rolling(20).std()
-        return df[['close', 'volume', 'rsi', 'ema_7', 'ema_25', 'bb_w', 'zscore']].dropna()
-
     async def manage_risk_multi(self, symbol, current_price):
-        """Modified to handle specific symbol risks"""
         for pos in self.positions[:]:
             if pos['symbol'] == symbol:
                 pnl_pct = (current_price - pos['entry']) / pos['entry']
-                
-                if pnl_pct > Config.TARGET_PROFIT_NET:
-                    await self.exchange.create_market_sell_order(symbol, pos['amt'])
-                    profit = (current_price - pos['entry']) * pos['amt']
-                    self.banked_pnl += profit
-                    self.positions.remove(pos)
-                    await self.send_telegram(f"✅ <b>TP HIT: {symbol}</b>\nProfit: +${profit:.2f}\nTotal: ${self.banked_pnl:.2f}")
-                
-                elif pnl_pct < -Config.STOP_LOSS_PCT:
-                    await self.exchange.create_market_sell_order(symbol, pos['amt'])
-                    loss = (current_price - pos['entry']) * pos['amt']
-                    self.banked_pnl += loss
-                    self.positions.remove(pos)
-                    await self.send_telegram(f"⚠️ <b>SL HIT: {symbol}</b>\nLoss: ${loss:.2f}")
+                if pnl_pct > Config.TARGET_PROFIT_NET or pnl_pct < -Config.STOP_LOSS_PCT:
+                    side = "TP" if pnl_pct > 0 else "SL"
+                    try:
+                        await self.exchange.create_market_sell_order(symbol, pos['amt'])
+                        profit = (current_price - pos['entry']) * pos['amt']
+                        self.banked_pnl += profit
+                        self.positions.remove(pos)
+                        emoji = "✅" if side == "TP" else "⚠️"
+                        await self.send_telegram(f"{emoji} <b>{side} HIT: {symbol}</b>\nPnL: ${profit:.2f}")
+                    except Exception as e:
+                        self.logger.error(f"Exit Error {symbol}: {e}")
 
     async def inference_loop(self):
-        await self.send_telegram(f"🤖 <b>Multi-Scanner Active</b>\nHunting 20 pairs on Railway.")
+        await self.train_on_fly()
+        await self.send_telegram("🤖 <b>AI Bot Online</b>\nSignals active for 20 pairs.")
+        
         while self.is_running:
             for symbol in Config.SYMBOLS:
                 try:
-                    if len(self.positions) >= Config.MAX_SLOTS:
-                        break
-
-                    # Skip if we already hold this coin
-                    if any(p['symbol'] == symbol for p in self.positions):
-                        continue
+                    if len(self.positions) >= Config.MAX_SLOTS: break
+                    if any(p['symbol'] == symbol for p in self.positions): continue
 
                     ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=100)
                     df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'volume'])
                     features_df = self.engineer_features(df)
                     
-                    scaled = self.scaler.fit_transform(features_df.values)
+                    # Use transform, NOT fit_transform here
+                    scaled = self.scaler.transform(features_df.values)
                     inp = torch.FloatTensor(scaled[-Config.SEQUENCE_LENGTH:]).unsqueeze(0)
                     
                     with torch.no_grad():
-                        prediction, _ = self.model(inp)[0].tolist()
+                        logits = self.model(inp)
+                        probs = torch.softmax(logits, dim=1)
+                        prediction = probs[0][1].item() # Probability of 'Up'
+
+                    print(f"DEBUG: {symbol} Score: {prediction:.4f}")
 
                     if prediction > Config.AI_THRESHOLD:
                         ticker = await self.exchange.fetch_ticker(symbol)
@@ -139,45 +173,32 @@ class DeepAlphaBot:
                         amt = Config.BASE_POSITION_USD / price
                         await self.exchange.create_market_buy_order(symbol, amt)
                         self.positions.append({'symbol': symbol, 'entry': price, 'amt': amt})
-                        await self.send_telegram(f"🚀 <b>AI ENTRY: {symbol}</b>\nPrice: {price}\nConf: {prediction:.2f}")
+                        await self.send_telegram(f"🚀 <b>AI BUY: {symbol}</b>\nConf: {prediction:.2f}")
 
-                    await asyncio.sleep(1) # Rate limit protection
+                    await asyncio.sleep(0.5)
                 except Exception as e:
                     self.logger.error(f"Scanner Error ({symbol}): {e}")
-            
-            await asyncio.sleep(10) # Wait before next full scan
+            await asyncio.sleep(10)
 
 # ==================== WEBSOCKET REFLEX ====================
 async def binance_multi_stream(bot):
-    """Monitors prices for all 20 coins via a single connection"""
     streams = [f"{s.replace('/', '').lower()}@ticker" for s in Config.SYMBOLS]
     url = f"wss://stream.binance.com:9443/ws/{'/'.join(streams)}"
-    
     while bot.is_running:
         try:
-            async with websockets.connect(url, ping_interval=20) as ws:
+            async with websockets.connect(url) as ws:
                 while bot.is_running:
                     data = json.loads(await ws.recv())
-                    symbol_raw = data['s'] # e.g. BTCUSDT
-                    # Convert raw back to our symbol format
+                    symbol_raw = data['s']
                     for original_symbol in Config.SYMBOLS:
                         if original_symbol.replace('/', '') == symbol_raw:
-                            current_price = float(data['c'])
-                            await bot.manage_risk_multi(original_symbol, current_price)
+                            await bot.manage_risk_multi(original_symbol, float(data['c']))
                             break
-        except Exception:
-            await asyncio.sleep(5)
+        except: await asyncio.sleep(5)
 
 async def main():
     bot = DeepAlphaBot()
-    await asyncio.gather(
-        bot.inference_loop(),
-        binance_multi_stream(bot)
-    )
+    await asyncio.gather(bot.inference_loop(), binance_multi_stream(bot))
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
-
+    asyncio.run(main())
