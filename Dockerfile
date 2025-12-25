@@ -1,16 +1,14 @@
-# Core Data and AI Libraries
-numpy==1.26.4
-pandas==2.2.0
-torch==2.2.0
-scikit-learn==1.4.0
+FROM python:3.11-slim-bookworm
 
-# Trading and Technical Analysis
-ccxt==4.2.18
-ta==0.11.0
+WORKDIR /app
 
-# Networking and Async
-websockets==12.0
-aiohttp==3.9.3
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Utilities
-python-dotenv==1.0.1
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "bot.py"]
