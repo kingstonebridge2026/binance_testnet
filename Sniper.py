@@ -118,24 +118,32 @@ class DeepAlphaBot:
                 await asyncio.sleep(10)
 
 # ==================== WEBSOCKET REFLEX ====================
+# ==================== STABLE WEBSOCKET REFLEX ====================
 async def binance_stream(symbol, bot):
     stream_symbol = symbol.replace('/', '').lower()
     url = f"wss://stream.binance.com:9443/ws/{stream_symbol}@ticker"
     
-    async with websockets.connect(url) as ws:
-        bot.logger.info("📡 WebSocket Stream Connected")
-        while bot.is_running:
-            try:
-                data = json.loads(await ws.recv())
-                current_price = float(data['c'])
-                bot.last_price = current_price
-                
-                # Check positions against every single price tick
-                if bot.positions:
-                    await bot.manage_risk(current_price)
-            except Exception as e:
-                bot.logger.error(f"Stream Error: {e}")
-                await asyncio.sleep(1)
+    bot.logger.info(f"📡 Attempting connection to {symbol} stream...")
+    
+    while bot.is_running:
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
+                bot.logger.info("✅ WebSocket Connected & Monitoring Ticks")
+                while bot.is_running:
+                    try:
+                        data = json.loads(await ws.recv())
+                        current_price = float(data['c'])
+                        bot.last_price = current_price
+                        
+                        if bot.positions:
+                            await bot.manage_risk(current_price)
+                    except websockets.ConnectionClosed:
+                        bot.logger.warning("📡 Connection lost. Reconnecting...")
+                        break # Exit inner loop to trigger reconnect
+        except Exception as e:
+            bot.logger.error(f"📡 Stream Error: {e}. Retrying in 5s...")
+            await asyncio.sleep(5)
+
 
 # ==================== MAIN START ====================
 async def main():
