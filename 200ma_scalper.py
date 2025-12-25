@@ -111,45 +111,45 @@ def calculate_ema(prices, period):
     return prices.ewm(span=period, adjust=False).mean()
 
 async def trading_loop(application):
-    print("🔥 Aggressive Scalping Loop Active...")
+    print("🚀 FORCING KICK-IN: High Frequency Mode...")
     while True:
         try:
-            # 1. Fetch data
-            ohlcv = await exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=30)
+            # 1. Fetch only what we need for speed
+            ohlcv = await exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=20)
             df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
             
-            # 2. Indicators for Aggressive Scalping
+            # 2. Ultra-Fast Indicators
             df['sma_20'] = df['close'].rolling(window=20).mean()
             df['stddev'] = df['close'].rolling(window=20).std()
-            df['lower_band'] = df['sma_20'] - (df['stddev'] * 2)
-            df['upper_band'] = df['sma_20'] + (df['stddev'] * 2)
-            df['rsi'] = calculate_rsi(df['close'], 7) # Faster RSI (7 instead of 14)
+            df['lower_band'] = df['sma_20'] - (df['stddev'] * 1.5) # Narrower bands = More trades
+            df['upper_band'] = df['sma_20'] + (df['stddev'] * 1.5)
+            df['rsi_fast'] = calculate_rsi(df['close'], 3) # RSI 3 is extremely sensitive
             
             ticker = await exchange.fetch_ticker(SYMBOL)
             bot_state['last_price'] = ticker['last']
-            bot_state['last_rsi'] = df['rsi'].iloc[-1]
+            bot_state['last_rsi'] = df['rsi_fast'].iloc[-1]
             
-            l = df.iloc[-1] # Latest candle
+            l = df.iloc[-1] 
 
-            # --- AGGRESSIVE SIGNAL LOGIC ---
+            # --- FORCED SIGNAL LOGIC ---
             if not bot_state['in_position']:
-                # BUY if price hits the bottom band OR RSI is extremely low
-                if l['close'] <= l['lower_band'] or l['rsi'] < 30:
+                # BUY if price is below the middle line OR rsi is not extreme
+                if l['close'] < l['sma_20'] or l['rsi_fast'] < 50:
+                    print("Entry signal detected! Kicking in...")
                     await execute_trade('BUY', bot_state['last_price'], application)
 
             elif bot_state['in_position']:
                 profit_pct = (bot_state['last_price'] - bot_state['entry_price']) / bot_state['entry_price']
                 
-                # SELL if price hits top band OR RSI is high OR we have quick profit
-                if l['close'] >= l['upper_band'] or l['rsi'] > 70 or profit_pct >= 0.003:
+                # EXIT quickly for small wins
+                if l['close'] > l['upper_band'] or l['rsi_fast'] > 80 or profit_pct >= 0.002:
                     await execute_trade('SELL', bot_state['last_price'], application)
                 
-                # Tighter Stop Loss for high frequency
+                # Emergency Stop
                 elif profit_pct <= -0.005:
                     await execute_trade('SELL', bot_state['last_price'], application)
 
-            # Check every 10 seconds for faster entries
-            await asyncio.sleep(10) 
+            await asyncio.sleep(10) # 10-second heartbeat
             
         except Exception as e:
             print(f"Loop error: {e}")
