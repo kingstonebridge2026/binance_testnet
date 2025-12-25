@@ -111,51 +111,49 @@ def calculate_ema(prices, period):
     return prices.ewm(span=period, adjust=False).mean()
 
 async def trading_loop(application):
-    print("Advanced Scalping Loop Active...")
+    print("🔥 Aggressive Scalping Loop Active...")
     while True:
         try:
-            ohlcv = await exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=210) # Fetch more for EMA 200
+            # 1. Fetch data
+            ohlcv = await exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=30)
             df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
             
-            # --- ADVANCED INDICATORS ---
-            df['ema_200'] = calculate_ema(df['close'], 200) # The "Trend Filter"
-            df['ema_50'] = calculate_ema(df['close'], 50)   # The "Medium Filter"
-            df['rsi'] = calculate_rsi(df['close'], 14)
+            # 2. Indicators for Aggressive Scalping
+            df['sma_20'] = df['close'].rolling(window=20).mean()
+            df['stddev'] = df['close'].rolling(window=20).std()
+            df['lower_band'] = df['sma_20'] - (df['stddev'] * 2)
+            df['upper_band'] = df['sma_20'] + (df['stddev'] * 2)
+            df['rsi'] = calculate_rsi(df['close'], 7) # Faster RSI (7 instead of 14)
             
             ticker = await exchange.fetch_ticker(SYMBOL)
             bot_state['last_price'] = ticker['last']
             bot_state['last_rsi'] = df['rsi'].iloc[-1]
             
-            l = df.iloc[-1] # Current candle
-            p = df.iloc[-2] # Previous candle
+            l = df.iloc[-1] # Latest candle
 
-            # --- OPTIMIZED SIGNAL LOGIC ---
+            # --- AGGRESSIVE SIGNAL LOGIC ---
             if not bot_state['in_position']:
-                # CONDITION 1: Price is in an UP-TREND (Price > EMA 200)
-                # CONDITION 2: Price is dipping but recovering (Price > EMA 50)
-                # CONDITION 3: RSI is not overbought (< 60)
-                if (l['close'] > l['ema_200'] and 
-                    l['close'] > l['ema_50'] and 
-                    l['rsi'] > 45 and p['rsi'] <= 45):
-                    
+                # BUY if price hits the bottom band OR RSI is extremely low
+                if l['close'] <= l['lower_band'] or l['rsi'] < 30:
                     await execute_trade('BUY', bot_state['last_price'], application)
 
             elif bot_state['in_position']:
-                # EXIT 1: Profit Target Reached (0.5%)
-                profit_pct = (l['close'] - bot_state['entry_price']) / bot_state['entry_price']
+                profit_pct = (bot_state['last_price'] - bot_state['entry_price']) / bot_state['entry_price']
                 
-                # EXIT 2: Trend Reversal (Price drops below EMA 50)
-                if profit_pct >= 0.005: # Take Profit at 0.5%
-                    await execute_trade('SELL', bot_state['last_price'], application, reason="TAKE PROFIT")
-                elif l['close'] < l['ema_50']: # Early Trend Exit
-                    await execute_trade('SELL', bot_state['last_price'], application, reason="TREND REVERSAL")
-                elif profit_pct <= -0.008: # Tight Stop Loss (0.8%)
-                    await execute_trade('SELL', bot_state['last_price'], application, reason="STOP LOSS")
+                # SELL if price hits top band OR RSI is high OR we have quick profit
+                if l['close'] >= l['upper_band'] or l['rsi'] > 70 or profit_pct >= 0.003:
+                    await execute_trade('SELL', bot_state['last_price'], application)
+                
+                # Tighter Stop Loss for high frequency
+                elif profit_pct <= -0.005:
+                    await execute_trade('SELL', bot_state['last_price'], application)
 
-            await asyncio.sleep(15) # Fast scanning
+            # Check every 10 seconds for faster entries
+            await asyncio.sleep(10) 
+            
         except Exception as e:
-            print(f"Logic Error: {e}")
-            await asyncio.sleep(10)
+            print(f"Loop error: {e}")
+            await asyncio.sleep(5)
 
 
 async def main():
