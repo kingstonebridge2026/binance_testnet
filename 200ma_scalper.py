@@ -22,7 +22,7 @@ exchange = ccxt.binance({
     'apiKey': BINANCE_API_KEY,
     'secret': BINANCE_SECRET,
     'enableRateLimit': True,
-    'options': {'defaultType': 'future', 'adjustForTimeDifference': True}
+    'options': {'defaultType': 'spot', 'adjustForTimeDifference': True}
 })
 exchange.set_sandbox_mode(True)
 
