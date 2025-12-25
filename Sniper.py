@@ -8,17 +8,15 @@ import json
 import websockets
 import logging
 import ta
-import aiohttp # Added for Telegram
+import aiohttp
 from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 
 # ==================== CONFIGURATION ====================
 class Config:
-    BINANCE_API_KEY = "pvoWQGHiBWeNOohDhZacMUqI3JEkb4HLMTm0xZL2eEFCLtwNTYxNThbZB4HFHIo7"
-    BINANCE_SECRET = "12Psc7IH3VVJRwWb05MvgpWrsSKz6CWmXqnHxYJKeHPljBeQ68Xv5hUnoLsaV7kH"
-    
-    # --- TELEGRAM CONFIG ---
-    TELEGRAM_TOKEN = "8287625785:AAH5CzpIgBiDYWO3WGikKYSaTwgz0rgc2y0"
+    BINANCE_API_KEY = "0hb4IO19WSbyO6VlM8S0Aa8tWwHSYhtQhDRoOG70iu912J95qm7HhtRspAoykSml"
+    BINANCE_SECRET = "RE8tftdsuG4MzcMfR4VNy6yvkho27qDMGiLZ6yR4cHXRWmCq1sV5AfBmgIIH06dK"
+    TELEGRAM_BOT_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
     TELEGRAM_CHAT_ID = "5665906172"
     
     SYMBOL = "BTC/USDT"
@@ -31,7 +29,7 @@ class Config:
     TARGET_PROFIT_NET = 0.005 # 0.5% Net
     STOP_LOSS_PCT = 0.015    # 1.5% SL
 
-# ==================== AI MODEL (TRANSFORMER) ====================
+# ==================== AI MODEL ====================
 class TemporalFusionTransformer(nn.Module):
     def __init__(self, input_size, hidden_size=128):
         super().__init__()
@@ -47,7 +45,7 @@ class TemporalFusionTransformer(nn.Module):
         attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
         return self.gate(attn_out[:, -1, :])
 
-# ==================== THE TRADING ENGINE ====================
+# ==================== TRADING CORE ====================
 class DeepAlphaBot:
     def __init__(self):
         self.exchange = ccxt.binance({
@@ -96,7 +94,7 @@ class DeepAlphaBot:
                 profit = (current_price - pos['entry']) * pos['amt']
                 self.banked_pnl += profit
                 self.positions.remove(pos)
-                msg = f"✅ <b>TP HIT!</b>\nProfit: +${profit:.2f}\nPNL: {pnl_pct:.2%}\nTotal Banked: ${self.banked_pnl:.2f}"
+                msg = f"✅ <b>TP HIT!</b>\nProfit: +${profit:.2f}\nTotal Banked: ${self.banked_pnl:.2f}"
                 await self.send_telegram(msg)
             
             elif pnl_pct < -Config.STOP_LOSS_PCT:
@@ -104,11 +102,11 @@ class DeepAlphaBot:
                 loss = (current_price - pos['entry']) * pos['amt']
                 self.banked_pnl += loss
                 self.positions.remove(pos)
-                msg = f"⚠️ <b>SL HIT!</b>\nLoss: ${loss:.2f}\nPNL: {pnl_pct:.2%}"
+                msg = f"⚠️ <b>SL HIT!</b>\nLoss: ${loss:.2f}"
                 await self.send_telegram(msg)
 
     async def inference_loop(self):
-        await self.send_telegram("🤖 <b>Transformer Bot Active</b>\nSystem initialized on Railway.")
+        await self.send_telegram("🤖 <b>Transformer Bot Active</b>\nPrecision tracking enabled on Railway.")
         while self.is_running:
             try:
                 ohlcv = await self.exchange.fetch_ohlcv(Config.SYMBOL, '1m', limit=100)
@@ -126,11 +124,11 @@ class DeepAlphaBot:
                     amt = Config.BASE_POSITION_USD / price
                     await self.exchange.create_market_buy_order(Config.SYMBOL, amt)
                     self.positions.append({'entry': price, 'amt': amt})
-                    await self.send_telegram(f"🚀 <b>AI LONG ENTRY</b>\nPrice: {price}\nConfidence: {prediction:.2f}")
+                    await self.send_telegram(f"🚀 <b>AI ENTRY</b>\nPrice: {price}\nConfidence: {prediction:.2f}")
 
                 await asyncio.sleep(10) 
             except Exception as e:
-                self.logger.error(f"Inference Error: {e}")
+                self.logger.error(f"Brain Error: {e}")
                 await asyncio.sleep(10)
 
 # ==================== WEBSOCKET REFLEX ====================
@@ -162,3 +160,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
+ 
