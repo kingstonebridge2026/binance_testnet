@@ -6,8 +6,3 @@ ta==0.11.0
 websockets==12.0
 aiohttp==3.9.3
 python-dotenv==1.0.1
---find-links https://download.pytorch.org/whl/cpu
-torch==2.2.0+cpu
-
-
-
