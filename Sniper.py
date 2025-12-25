@@ -1,104 +1,153 @@
-import ccxt.async_support as ccxt
-import pandas as pd
+
 import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
 import asyncio
-import uuid
+import ccxt.async_support as ccxt
+import json
+import websockets
+import logging
+import ta
 from datetime import datetime
-from telegram.ext import ApplicationBuilder
+from sklearn.preprocessing import StandardScaler
 
-# ===== PRO CREDENTIALS =====
-BINANCE_API_KEY = "0hb4IO19WSbyO6VlM8S0Aa8tWwHSYhtQhDRoOG70iu912J95qm7HhtRspAoykSml"
-BINANCE_SECRET = "RE8tftdsuG4MzcMfR4VNy6yvkho27qDMGiLZ6yR4cHXRWmCq1sV5AfBmgIIH06dK"
-TELEGRAM_BOT_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
-TELEGRAM_CHAT_ID = "5665906172"
-
-SYMBOL = "BTC/USDT"
-POSITION_SIZE = 0.0025 # Leveraging Testnet for high turnover
-MAX_SLOTS = 15 
-GOAL_PER_HOUR = 10.0
-
-exchange = ccxt.binance({
-    'apiKey': BINANCE_API_KEY, 'secret': BINANCE_SECRET,
-    'enableRateLimit': True, 'options': {'defaultType': 'spot'}
-})
-exchange.set_sandbox_mode(True)
-
-bot_state = {"pnl": 0.0, "positions": [], "last_price": 0.0, "dash_msg_id": None}
-
-def build_deep_dash(z_score):
-    upnl = sum([(bot_state['last_price'] - p['entry']) * POSITION_SIZE for p in bot_state['positions']])
-    market_mood = "🔥 VOLATILE" if abs(z_score) > 2 else "😴 CALM"
+# ==================== CONFIGURATION ====================
+class Config:
+    BINANCE_API_KEY = "pvoWQGHiBWeNOohDhZacMUqI3JEkb4HLMTm0xZL2eEFCLtwNTYxNThbZB4HFHIo7"
+    BINANCE_SECRET = "12Psc7IH3VVJRwWb05MvgpWrsSKz6CWmXqnHxYJKeHPljBeQ68Xv5hUnoLsaV7kH"
     
-    dash = (
-        f"🧠 <b>DEEP-LEARNING ALPHA v3</b>\n"
-        f"<code>Market Mood:</code> {market_mood}\n"
-        f"<code>Z-Score:    </code> {z_score:.2f}\n"
-        f"--------------------------\n"
-        f"💰 <b>Banked:</b>  +${bot_state['pnl']:.2f}\n"
-        f"🌊 <b>Floating:</b> ${upnl:.4f}\n"
-        f"--------------------------\n"
-        f"🎯 <b>Hourly:</b> {((bot_state['pnl']/GOAL_PER_HOUR)*100):.1f}% Completed\n"
-        f"<i>Slots: {len(bot_state['positions'])}/{MAX_SLOTS}</i>"
-    )
-    return dash
+    SYMBOL = "BTC/USDT"
+    BASE_POSITION_USD = 100.0  
+    MAX_SLOTS = 10
+    
+    SEQUENCE_LENGTH = 60 
+    INPUT_SIZE = 7 # Optimized for speed on Redmi 9A
+    
+    TARGET_PROFIT_NET = 0.005 # 0.5% Net
+    STOP_LOSS_PCT = 0.015    # 1.5% SL
 
-async def update_terminal(app, z_score):
-    try:
-        text = build_deep_dash(z_score)
-        if bot_state['dash_msg_id'] is None:
-            msg = await app.bot.send_message(TELEGRAM_CHAT_ID, text, parse_mode='HTML')
-            bot_state['dash_msg_id'] = msg.message_id
-        else:
-            await app.bot.edit_message_text(text, TELEGRAM_CHAT_ID, bot_state['dash_msg_id'], parse_mode='HTML')
-    except: pass
+# ==================== AI MODEL (TRANSFORMER) ====================
+class TemporalFusionTransformer(nn.Module):
+    def __init__(self, input_size, hidden_size=128):
+        super().__init__()
+        self.input_layer = nn.Linear(input_size, hidden_size)
+        self.lstm = nn.LSTM(hidden_size, hidden_size, batch_first=True, bidirectional=True)
+        self.attention = nn.MultiheadAttention(embed_dim=hidden_size*2, num_heads=4, batch_first=True)
+        self.gate = nn.Linear(hidden_size*2, 2)
+        self.dropout = nn.Dropout(0.1)
 
-async def brain_loop(app):
-    print("🚀 DEEP LEARNING STRATEGY STARTING...")
-    while True:
-        try:
-            ticker = await exchange.fetch_ticker(SYMBOL)
-            bot_state['last_price'] = ticker['last']
-            price = ticker['last']
+    def forward(self, x):
+        x = self.dropout(torch.relu(self.input_layer(x)))
+        lstm_out, _ = self.lstm(x)
+        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
+        return self.gate(attn_out[:, -1, :])
+
+# ==================== THE TRADING ENGINE ====================
+class DeepAlphaBot:
+    def __init__(self):
+        self.exchange = ccxt.binance({
+            'apiKey': Config.BINANCE_API_KEY,
+            'secret': Config.BINANCE_SECRET,
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        })
+        self.exchange.set_sandbox_mode(True) 
+        
+        self.model = TemporalFusionTransformer(Config.INPUT_SIZE)
+        self.scaler = StandardScaler()
+        self.positions = []
+        self.last_price = 0.0
+        self.is_running = True
+        
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+        self.logger = logging.getLogger("AlphaBot")
+
+    def engineer_features(self, df):
+        # Optimized feature set for real-time performance
+        df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
+        df['ema_7'] = ta.trend.ema_indicator(df['close'], window=7)
+        df['ema_25'] = ta.trend.ema_indicator(df['close'], window=25)
+        df['bb_w'] = ta.volatility.BollingerBands(df['close']).bollinger_wband()
+        df['zscore'] = (df['close'] - df['close'].rolling(20).mean()) / df['close'].rolling(20).std()
+        return df[['close', 'volume', 'rsi', 'ema_7', 'ema_25', 'bb_w', 'zscore']].dropna()
+
+    async def manage_risk(self, current_price):
+        """Called by WebSocket for instant reactions"""
+        for pos in self.positions[:]:
+            pnl_pct = (current_price - pos['entry']) / pos['entry']
             
-            # --- THE DEEP LEARNING CALCULATION ---
-            ohlcv = await exchange.fetch_ohlcv(SYMBOL, '1m', limit=50)
-            df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
+            # Instant Take-Profit
+            if pnl_pct > (Config.TARGET_PROFIT_NET + 0.002):
+                await self.exchange.create_market_sell_order(Config.SYMBOL, pos['amt'])
+                self.positions.remove(pos)
+                self.logger.info(f"💰 PROFIT BANKED: {pnl_pct:.2%}")
             
-            # Calculate Z-Score (Distance from Mean in Standard Deviations)
-            mean = df['c'].mean()
-            std = df['c'].std()
-            z_score = (price - mean) / std if std > 0 else 0
+            # Instant Stop-Loss
+            elif pnl_pct < -Config.STOP_LOSS_PCT:
+                await self.exchange.create_market_sell_order(Config.SYMBOL, pos['amt'])
+                self.positions.remove(pos)
+                self.logger.warning(f"⚠️ STOP LOSS HIT: {pnl_pct:.2%}")
 
-            # 1. ENTRY: "The Statistical Snap"
-            # Buy only if price is more than 2.0 Standard Deviations below the mean
-            if len(bot_state['positions']) < MAX_SLOTS and z_score < -2.0:
-                await exchange.create_market_buy_order(SYMBOL, POSITION_SIZE)
-                bot_state['positions'].append({"entry": price, "id": str(uuid.uuid4())[:3]})
-
-            # 2. EXIT: "The Quick Reversion"
-            for p in bot_state['positions'][:]:
-                profit_pct = (price - p['entry']) / p['entry']
+    async def inference_loop(self):
+        """The 'Brain' - Runs deep analysis every few seconds"""
+        while self.is_running:
+            try:
+                ohlcv = await self.exchange.fetch_ohlcv(Config.SYMBOL, '1m', limit=100)
+                df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'volume'])
+                features_df = self.engineer_features(df)
                 
-                # Dynamic TP: Exit as soon as price returns to the Mean (Z-Score > 0)
-                # OR if we hit a 0.35% hard target
-                if z_score >= 0.2 or profit_pct >= 0.0035:
-                    await exchange.create_market_sell_order(SYMBOL, POSITION_SIZE)
-                    net = (POSITION_SIZE * price * profit_pct) - (POSITION_SIZE * price * 0.001)
-                    bot_state['pnl'] += net
-                    bot_state['positions'].remove(p)
+                # Prepare AI Input
+                scaled = self.scaler.fit_transform(features_df.values)
+                inp = torch.FloatTensor(scaled[-Config.SEQUENCE_LENGTH:]).unsqueeze(0)
+                
+                with torch.no_grad():
+                    prediction, volatility = self.model(inp)[0].tolist()
 
-            await update_terminal(app, z_score)
-            await asyncio.sleep(1.5)
-        except Exception as e:
-            await asyncio.sleep(5)
+                # Execution Logic
+                if prediction > 0.6 and len(self.positions) < Config.MAX_SLOTS:
+                    price = self.last_price if self.last_price > 0 else df['close'].iloc[-1]
+                    amt = Config.BASE_POSITION_USD / price
+                    await self.exchange.create_market_buy_order(Config.SYMBOL, amt)
+                    self.positions.append({'entry': price, 'amt': amt})
+                    self.logger.info(f"🚀 AI BUY | Conf: {prediction:.2f} | Price: {price}")
 
+                await asyncio.sleep(5) 
+            except Exception as e:
+                self.logger.error(f"Inference Error: {e}")
+                await asyncio.sleep(10)
+
+# ==================== WEBSOCKET REFLEX ====================
+async def binance_stream(symbol, bot):
+    stream_symbol = symbol.replace('/', '').lower()
+    url = f"wss://stream.binance.com:9443/ws/{stream_symbol}@ticker"
+    
+    async with websockets.connect(url) as ws:
+        bot.logger.info("📡 WebSocket Stream Connected")
+        while bot.is_running:
+            try:
+                data = json.loads(await ws.recv())
+                current_price = float(data['c'])
+                bot.last_price = current_price
+                
+                # Check positions against every single price tick
+                if bot.positions:
+                    await bot.manage_risk(current_price)
+            except Exception as e:
+                bot.logger.error(f"Stream Error: {e}")
+                await asyncio.sleep(1)
+
+# ==================== MAIN START ====================
 async def main():
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    async with app:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        await brain_loop(app)
+    bot = DeepAlphaBot()
+    # Run the Brain and the Reflex simultaneously
+    await asyncio.gather(
+        bot.inference_loop(),
+        binance_stream(Config.SYMBOL, bot)
+    )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Shutting down...")
