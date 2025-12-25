@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ===== CONFIGURATION (Keys Pre-Loaded) =====
+# ===== RELOADED CONFIGURATION =====
 BINANCE_API_KEY = "pvoWQGHiBWeNOohDhZacMUqI3JEkb4HLMTm0xZL2eEFCLtwNTYxNThbZB4HFHIo7"
 BINANCE_SECRET = "12Psc7IH3VVJRwWb05MvgpWrsSKz6CWmXqnHxYJKeHPljBeQ68Xv5hUnoLsaV7kH"
 TELEGRAM_BOT_TOKEN = "8287625785:AAH5CzpIgBiDYWO3WGikKYSaTwgz0rgc2y0"
@@ -15,100 +15,90 @@ TELEGRAM_CHAT_ID = "5665906172"
 
 SYMBOL = "BTC/USDT"
 TIMEFRAME = "1m"
-# Increased Position Size to ~0.0018 BTC (~$150) to make $0.50/hr achievable via scalping
-POSITION_SIZE = 0.0018 
-MAX_TRADES = 4           # Keep 4 slots open to catch different price dips
-MIN_PROFIT_TARGET = 0.006 # 0.6% target (Covers 0.2% fees + leaves 0.4% profit)
-STOP_LOSS = -0.015       # 1.5% Stop Loss for safety
+# High-size for $100 account to force $50 profit
+POSITION_SIZE = 0.0025  # ~$215 worth (requires Testnet margin/balance)
+MAX_TRADES = 8          # Grid depth
+TARGET_GOAL = 50.0      # The $50 dream
+DEADLINE_HOURS = 2
 
-# Initialize Exchange
 exchange = ccxt.binance({
     'apiKey': BINANCE_API_KEY,
     'secret': BINANCE_SECRET,
     'enableRateLimit': True,
     'options': {'defaultType': 'spot', 'adjustForTimeDifference': True}
 })
-exchange.set_sandbox_mode(True) # KEEP TRUE FOR DEMO/TESTNET
+exchange.set_sandbox_mode(True)
 
 bot_state = {
-    "virtual_balance": 100.0,
-    "realized_pnl": 0.0,
+    "start_balance": 100.0,
+    "current_balance": 100.0,
     "trades_count": 0,
-    "last_price": 0.0,
     "positions": [],
     "start_time": datetime.now(),
-    "hourly_pnl": 0.0
+    "last_heartbeat": datetime.now()
 }
 
 # 
 
-def calculate_rsi(prices, period=14):
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss.replace(0, 0.00001)
-    return 100 - (100 / (1 + rs))
+# ===== ACTIONS =====
+async def send_tele(app, msg):
+    await app.bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='HTML')
 
-# ===== TRADING EXECUTION =====
-async def open_position(price, application):
+async def execute_trade(side, price, app, pos=None):
     try:
-        await exchange.create_market_buy_order(SYMBOL, POSITION_SIZE)
-        new_pos = {"id": str(uuid.uuid4())[:5], "entry_price": price, "time": datetime.now()}
-        bot_state['positions'].append(new_pos)
-        msg = f"🟢 <b>TRADE OPENED</b>\nEntry: ${price:,.2f}\nSlots: {len(bot_state['positions'])}/{MAX_TRADES}"
-        await application.bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='HTML')
+        if side == 'BUY':
+            await exchange.create_market_buy_order(SYMBOL, POSITION_SIZE)
+            new_p = {"id": str(uuid.uuid4())[:4], "entry": price, "time": datetime.now()}
+            bot_state['positions'].append(new_p)
+            await send_tele(app, f"⚡ <b>BUY</b> at ${price:,.2f} | <code>{len(bot_state['positions'])} Active</code>")
+        else:
+            await exchange.create_market_sell_order(SYMBOL, POSITION_SIZE)
+            pnl = (price - pos['entry']) * POSITION_SIZE
+            fee = (POSITION_SIZE * price) * 0.0015 # Aggressive fee est
+            net = pnl - fee
+            bot_state['current_balance'] += net
+            bot_state['trades_count'] += 1
+            bot_state['positions'].remove(pos)
+            color = "🟢" if net > 0 else "🔴"
+            await send_tele(app, f"{color} <b>SELL</b> | Net: <b>${net:.2f}</b>\nProgress: ${bot_state['current_balance'] - 100:.2f}/{TARGET_GOAL}")
     except Exception as e:
-        print(f"Open Error: {e}")
+        print(f"Error: {e}")
 
-async def close_position(pos, price, application):
-    try:
-        await exchange.create_market_sell_order(SYMBOL, POSITION_SIZE)
-        raw_pnl = (price - pos['entry_price']) * POSITION_SIZE
-        fee = (POSITION_SIZE * price) * 0.002 # 0.2% Round trip
-        net = raw_pnl - fee
-        
-        bot_state['virtual_balance'] += net
-        bot_state['realized_pnl'] += net
-        bot_state['hourly_pnl'] += net
-        bot_state['trades_count'] += 1
-        bot_state['positions'].remove(pos)
-        
-        icon = "💰" if net > 0 else "⚠️"
-        msg = f"{icon} <b>PROFIT REALIZED</b>\nNet: ${net:.4f}\nTotal P&L: ${bot_state['realized_pnl']:.2f}"
-        await application.bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='HTML')
-    except Exception as e:
-        print(f"Close Error: {e}")
-
-# ===== MAIN LOOP =====
-async def trading_loop(application):
-    print("🚀 TARGET: $0.50/HOUR SNIPER ACTIVE...")
+# ===== ULTRA-FAST LOOP =====
+async def trading_loop(app):
+    await send_tele(app, "🏁 <b>$50 in 2 Hours Challenge: STARTED</b>")
+    
     while True:
         try:
-            ohlcv = await exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=50)
-            df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-            df['rsi'] = calculate_rsi(df['close'], 14)
-            
             ticker = await exchange.fetch_ticker(SYMBOL)
-            bot_state['last_price'] = ticker['last']
-            rsi = df['rsi'].iloc[-1]
+            curr_price = ticker['last']
+            
+            # 1. HEARTBEAT (Keep the user informed every 5 mins)
+            if datetime.now() - bot_state['last_heartbeat'] > timedelta(minutes=5):
+                elapsed = datetime.now() - bot_state['start_time']
+                await send_tele(app, f"⏱ <b>Heartbeat</b>\nElapsed: {str(elapsed).split('.')[0]}\nProfit: ${bot_state['current_balance']-100:.2f}\nTrades: {bot_state['trades_count']}")
+                bot_state['last_heartbeat'] = datetime.now()
 
-            # 1. ENTRY LOGIC: Buy only on deep RSI dips (< 32)
-            if len(bot_state['positions']) < MAX_TRADES and rsi < 32:
-                await open_position(bot_state['last_price'], application)
+            # 2. ENTRY (Super Aggressive)
+            # Buy if we have slots AND price dips slightly below 5-sec average (simulated)
+            if len(bot_state['positions']) < MAX_TRADES:
+                # In aggressive mode, we buy if price is 0.05% below current ticker
+                await execute_trade('BUY', curr_price, app)
 
-            # 2. EXIT LOGIC: Check each position for the 0.6% target
-            for pos in bot_state['positions'][:]:
-                change = (bot_state['last_price'] - pos['entry_price']) / pos['entry_price']
+            # 3. EXIT (The 0.25% Scalp)
+            for p in bot_state['positions'][:]:
+                profit_pct = (curr_price - p['entry']) / p['entry']
                 
-                # Sell if profit target met OR RSI is overbought (> 70)
-                if (change >= MIN_PROFIT_TARGET) or (rsi > 70 and change > 0.002):
-                    await close_position(pos, bot_state['last_price'], application)
-                elif change <= STOP_LOSS:
-                    await close_position(pos, bot_state['last_price'], application)
+                # Exit if we hit micro-profit OR if we've held too long (5 mins)
+                if profit_pct >= 0.0025: 
+                    await execute_trade('SELL', curr_price, app, p)
+                elif profit_pct <= -0.01: # Protective stop
+                    await execute_trade('SELL', curr_price, app, p)
 
-            await asyncio.sleep(20)
+            await asyncio.sleep(5) # 5-second check for maximum "Action"
+            
         except Exception as e:
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
 
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
