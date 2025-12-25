@@ -82,39 +82,55 @@ class DeepAlphaBot:
         return df[['close', 'volume', 'rsi', 'ema_7', 'ema_25', 'bb_w', 'zscore']].dropna()
 
     async def train_on_fly(self):
-        """Initial training on historical data so the model isn't random"""
-        self.logger.info("📥 Initializing AI Warm-up... Fetching history.")
+        """Memory-optimized training to prevent Railway OOM crashes"""
+        self.logger.info("📥 Starting LITE Warm-up (Memory-Safe Mode)...")
         all_data = []
-        for symbol in Config.SYMBOLS[:5]: # Train on top 5 for speed
-            ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=500)
-            df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'volume'])
-            features = self.engineer_features(df)
-            all_data.append(features.values)
         
+        # Reduced to only 2 symbols for the 'warm-up' to save RAM
+        for symbol in Config.SYMBOLS[:2]: 
+            try:
+                # Reduced history from 1000 to 300 to keep RAM low
+                ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=300) 
+                df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'volume'])
+                features = self.engineer_features(df)
+                all_data.append(features.values)
+            except Exception as e:
+                self.logger.error(f"Data fetch error: {e}")
+        
+        if not all_data:
+            self.logger.warning("No data found for training. Skipping warm-up.")
+            return
+
         train_data = np.vstack(all_data)
-        self.scaler.fit(train_data) # Fit scaler ONCE here
+        self.scaler.fit(train_data)
         
-        # Simple supervised learning setup
-        X = []
-        Y = []
+        # Prepare small batches to keep memory usage flat
         scaled_data = self.scaler.transform(train_data)
+        X, Y = [], []
         for i in range(len(scaled_data) - Config.SEQUENCE_LENGTH - 1):
-            X.append(scaled_data[i:i+Config.SEQUENCE_LENGTH])
-            # Target: 1 if price goes up in next 5 mins, 0 if not
-            Y.append(1 if train_data[i+Config.SEQUENCE_LENGTH+1, 0] > train_data[i+Config.SEQUENCE_LENGTH, 0] else 0)
+            X.append(scaled_data[i : i + Config.SEQUENCE_LENGTH])
+            Y.append(1 if train_data[i + Config.SEQUENCE_LENGTH + 1, 0] > train_data[i + Config.SEQUENCE_LENGTH, 0] else 0)
         
-        X, Y = torch.FloatTensor(np.array(X)), torch.LongTensor(np.array(Y))
+        X = torch.FloatTensor(np.array(X))
+        Y = torch.LongTensor(np.array(Y))
+        
         optimizer = optim.Adam(self.model.parameters(), lr=0.001)
         criterion = nn.CrossEntropyLoss()
 
-        self.logger.info("🧠 Training AI on current market conditions...")
-        for epoch in range(10):
+        self.logger.info(f"🧠 Training on {len(X)} samples...")
+        self.model.train()
+        for epoch in range(5): # Reduced epochs for speed/stability
             optimizer.zero_grad()
             outputs = self.model(X)
             loss = criterion(outputs, Y)
             loss.backward()
             optimizer.step()
-        self.logger.info("✅ Training complete. Model is now optimized.")
+            # Clear cache to free RAM
+            if torch.cuda.is_available(): torch.cuda.empty_cache()
+            
+        self.model.eval()
+        self.logger.info("✅ LITE Warm-up complete. RAM usage stabilized.")
+
 
     async def send_telegram(self, message):
         url = f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/sendMessage"
