@@ -1,4 +1,3 @@
-
 import numpy as np
 import pandas as pd
 import torch
@@ -9,6 +8,7 @@ import json
 import websockets
 import logging
 import ta
+import aiohttp # Added for Telegram
 from datetime import datetime
 from sklearn.preprocessing import StandardScaler
 
@@ -17,12 +17,16 @@ class Config:
     BINANCE_API_KEY = "pvoWQGHiBWeNOohDhZacMUqI3JEkb4HLMTm0xZL2eEFCLtwNTYxNThbZB4HFHIo7"
     BINANCE_SECRET = "12Psc7IH3VVJRwWb05MvgpWrsSKz6CWmXqnHxYJKeHPljBeQ68Xv5hUnoLsaV7kH"
     
+    # --- TELEGRAM CONFIG ---
+    TELEGRAM_TOKEN = "8287625785:AAH5CzpIgBiDYWO3WGikKYSaTwgz0rgc2y0"
+    TELEGRAM_CHAT_ID = "5665906172"
+    
     SYMBOL = "BTC/USDT"
     BASE_POSITION_USD = 100.0  
     MAX_SLOTS = 10
     
     SEQUENCE_LENGTH = 60 
-    INPUT_SIZE = 7 # Optimized for speed on Redmi 9A
+    INPUT_SIZE = 7 
     
     TARGET_PROFIT_NET = 0.005 # 0.5% Net
     STOP_LOSS_PCT = 0.015    # 1.5% SL
@@ -58,13 +62,24 @@ class DeepAlphaBot:
         self.scaler = StandardScaler()
         self.positions = []
         self.last_price = 0.0
+        self.banked_pnl = 0.0
         self.is_running = True
         
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
         self.logger = logging.getLogger("AlphaBot")
 
+    async def send_telegram(self, message):
+        """Sends real-time alerts to your phone"""
+        url = f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/sendMessage"
+        payload = {"chat_id": Config.TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload) as resp:
+                    return await resp.json()
+        except Exception as e:
+            self.logger.error(f"Telegram Error: {e}")
+
     def engineer_features(self, df):
-        # Optimized feature set for real-time performance
         df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
         df['ema_7'] = ta.trend.ema_indicator(df['close'], window=7)
         df['ema_25'] = ta.trend.ema_indicator(df['close'], window=25)
@@ -73,89 +88,77 @@ class DeepAlphaBot:
         return df[['close', 'volume', 'rsi', 'ema_7', 'ema_25', 'bb_w', 'zscore']].dropna()
 
     async def manage_risk(self, current_price):
-        """Called by WebSocket for instant reactions"""
         for pos in self.positions[:]:
             pnl_pct = (current_price - pos['entry']) / pos['entry']
             
-            # Instant Take-Profit
             if pnl_pct > (Config.TARGET_PROFIT_NET + 0.002):
                 await self.exchange.create_market_sell_order(Config.SYMBOL, pos['amt'])
+                profit = (current_price - pos['entry']) * pos['amt']
+                self.banked_pnl += profit
                 self.positions.remove(pos)
-                self.logger.info(f"💰 PROFIT BANKED: {pnl_pct:.2%}")
+                msg = f"✅ <b>TP HIT!</b>\nProfit: +${profit:.2f}\nPNL: {pnl_pct:.2%}\nTotal Banked: ${self.banked_pnl:.2f}"
+                await self.send_telegram(msg)
             
-            # Instant Stop-Loss
             elif pnl_pct < -Config.STOP_LOSS_PCT:
                 await self.exchange.create_market_sell_order(Config.SYMBOL, pos['amt'])
+                loss = (current_price - pos['entry']) * pos['amt']
+                self.banked_pnl += loss
                 self.positions.remove(pos)
-                self.logger.warning(f"⚠️ STOP LOSS HIT: {pnl_pct:.2%}")
+                msg = f"⚠️ <b>SL HIT!</b>\nLoss: ${loss:.2f}\nPNL: {pnl_pct:.2%}"
+                await self.send_telegram(msg)
 
     async def inference_loop(self):
-        """The 'Brain' - Runs deep analysis every few seconds"""
+        await self.send_telegram("🤖 <b>Transformer Bot Active</b>\nSystem initialized on Railway.")
         while self.is_running:
             try:
                 ohlcv = await self.exchange.fetch_ohlcv(Config.SYMBOL, '1m', limit=100)
                 df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'volume'])
                 features_df = self.engineer_features(df)
                 
-                # Prepare AI Input
                 scaled = self.scaler.fit_transform(features_df.values)
                 inp = torch.FloatTensor(scaled[-Config.SEQUENCE_LENGTH:]).unsqueeze(0)
                 
                 with torch.no_grad():
                     prediction, volatility = self.model(inp)[0].tolist()
 
-                # Execution Logic
                 if prediction > 0.6 and len(self.positions) < Config.MAX_SLOTS:
                     price = self.last_price if self.last_price > 0 else df['close'].iloc[-1]
                     amt = Config.BASE_POSITION_USD / price
                     await self.exchange.create_market_buy_order(Config.SYMBOL, amt)
                     self.positions.append({'entry': price, 'amt': amt})
-                    self.logger.info(f"🚀 AI BUY | Conf: {prediction:.2f} | Price: {price}")
+                    await self.send_telegram(f"🚀 <b>AI LONG ENTRY</b>\nPrice: {price}\nConfidence: {prediction:.2f}")
 
-                await asyncio.sleep(5) 
+                await asyncio.sleep(10) 
             except Exception as e:
                 self.logger.error(f"Inference Error: {e}")
                 await asyncio.sleep(10)
 
 # ==================== WEBSOCKET REFLEX ====================
-# ==================== STABLE WEBSOCKET REFLEX ====================
 async def binance_stream(symbol, bot):
     stream_symbol = symbol.replace('/', '').lower()
     url = f"wss://stream.binance.com:9443/ws/{stream_symbol}@ticker"
     
-    bot.logger.info(f"📡 Attempting connection to {symbol} stream...")
-    
     while bot.is_running:
         try:
             async with websockets.connect(url, ping_interval=20, ping_timeout=20) as ws:
-                bot.logger.info("✅ WebSocket Connected & Monitoring Ticks")
                 while bot.is_running:
                     try:
                         data = json.loads(await ws.recv())
                         current_price = float(data['c'])
                         bot.last_price = current_price
-                        
                         if bot.positions:
                             await bot.manage_risk(current_price)
                     except websockets.ConnectionClosed:
-                        bot.logger.warning("📡 Connection lost. Reconnecting...")
-                        break # Exit inner loop to trigger reconnect
+                        break 
         except Exception as e:
-            bot.logger.error(f"📡 Stream Error: {e}. Retrying in 5s...")
             await asyncio.sleep(5)
 
-
-# ==================== MAIN START ====================
 async def main():
     bot = DeepAlphaBot()
-    # Run the Brain and the Reflex simultaneously
-    await asyncio.gather(
-        bot.inference_loop(),
-        binance_stream(Config.SYMBOL, bot)
-    )
+    await asyncio.gather(bot.inference_loop(), binance_stream(Config.SYMBOL, bot))
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Shutting down...")
+        pass
