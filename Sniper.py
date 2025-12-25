@@ -1,145 +1,121 @@
 import ccxt.async_support as ccxt
 import pandas as pd
 import asyncio
-import os
 import uuid
 from datetime import datetime, timedelta
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder
 
-# ===== CONFIGURATION =====
-BINANCE_API_KEY = os.getenv("BINANCE_KEY", "your_key")
-BINANCE_SECRET = os.getenv("BINANCE_SECRET", "your_secret")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_TOKEN", "your_token")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "your_id")
+# ===== PRO CREDENTIALS =====
+BINANCE_API_KEY = "0hb4IO19WSbyO6VlM8S0Aa8tWwHSYhtQhDRoOG70iu912J95qm7HhtRspAoykSml"
+BINANCE_SECRET = "RE8tftdsuG4MzcMfR4VNy6yvkho27qDMGiLZ6yR4cHXRWmCq1sV5AfBmgIIH06dK"
+TELEGRAM_BOT_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
+TELEGRAM_CHAT_ID = "5665906172"
 
 SYMBOL = "BTC/USDT"
-TIMEFRAME = "1m"
-POSITION_SIZE = 0.0012 
-MAX_TRADES = 5  # Allow up to 5 simultaneous trades
-MIN_PROFIT_TARGET = 0.005 # 0.5% (Covers 0.2% fees + 0.3% pure profit)
-ROUND_TRIP_FEE = 0.002    # 0.2% total for buy + sell
+# Using high relative size to achieve the 100%/hr goal
+POSITION_SIZE = 0.0015 # ~ $130 (Utilizing Testnet margin/liquidity)
+MAX_SLOTS = 12 
+GOAL_PER_HOUR = 10.0
 
-# Initialize Exchange
 exchange = ccxt.binance({
-    'apiKey': BINANCE_API_KEY,
-    'secret': BINANCE_SECRET,
-    'enableRateLimit': True,
-    'options': {'defaultType': 'spot', 'adjustForTimeDifference': True}
+    'apiKey': BINANCE_API_KEY, 'secret': BINANCE_SECRET,
+    'enableRateLimit': True, 'options': {'defaultType': 'spot'}
 })
 exchange.set_sandbox_mode(True)
 
-# Shared Bot State (Multi-Trade)
 bot_state = {
-    "virtual_balance": 100.0,
-    "realized_pnl": 0.0,
-    "trades_count": 0,
+    "balance": 10.0,
+    "pnl": 0.0,
+    "positions": [],
+    "wins": 0,
     "last_price": 0.0,
-    "positions": [], # List of active trade dicts
-    "last_trade_time": datetime.now() - timedelta(minutes=60)
+    "trend": "NEUTRAL",
+    "dash_msg_id": None,
+    "start_time": datetime.now()
 }
 
-def calculate_rsi(prices, period=14):
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss.replace(0, 0.00001)
-    return 100 - (100 / (1 + rs))
-
-# ===== TELEGRAM COMMANDS =====
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    pos_count = len(bot_state['positions'])
-    msg = f"📊 <b>Market: ${bot_state['last_price']:,.2f}</b>\n"
-    msg += f"Active Trades: {pos_count}/{MAX_TRADES}\n\n"
+def build_advanced_dash():
+    upnl = sum([(bot_state['last_price'] - p['entry']) * POSITION_SIZE for p in bot_state['positions']])
+    elapsed = (datetime.now() - bot_state['start_time']).seconds / 3600
+    expected = GOAL_PER_HOUR * elapsed
     
-    for i, p in enumerate(bot_state['positions']):
-        pnl = (bot_state['last_price'] - p['entry_price']) * POSITION_SIZE
-        msg += f"Trade #{i+1}: Entry ${p['entry_price']:,.2f} | P&L: ${pnl:.4f}\n"
+    # Trend Visualizer
+    trend_arrow = "➡️" if bot_state['trend'] == "NEUTRAL" else ("🚀" if bot_state['trend'] == "BULL" else "📉")
     
-    await update.message.reply_text(msg, parse_mode='HTML')
+    dash = (
+        f"🤖 <b>AI ALPHA v2 (2025)</b>\n"
+        f"<code>Trend:</code> {bot_state['trend']} {trend_arrow}\n"
+        f"<code>Price:</code> ${bot_state['last_price']:,.2f}\n"
+        f"--------------------------\n"
+        f"💰 <b>Banked:</b>  +${bot_state['pnl']:.2f}\n"
+        f"🌊 <b>Floating:</b> ${upnl:.4f}\n"
+        f"--------------------------\n"
+        f"📈 <b>Progress:</b> {((bot_state['pnl']/GOAL_PER_HOUR)*100):.1f}% of Hr Goal\n"
+        f"<i>Active Traps: {len(bot_state['positions'])}/{MAX_SLOTS}</i>"
+    )
+    return dash
 
-# ===== TRADING EXECUTION =====
-async def open_position(price, application):
+async def update_terminal(app):
     try:
-        # Check if we have room and it's been at least 10 mins since last trade
-        if len(bot_state['positions']) >= MAX_TRADES: return
-        
-        await exchange.create_market_buy_order(SYMBOL, POSITION_SIZE)
-        new_pos = {
-            "id": str(uuid.uuid4())[:8],
-            "entry_price": price,
-            "time": datetime.now()
-        }
-        bot_state['positions'].append(new_pos)
-        bot_state['last_trade_time'] = datetime.now()
-        
-        msg = f"🟢 <b>MULTI-TRADE OPENED</b>\nEntry: ${price:,.2f}\nPositions: {len(bot_state['positions'])}/{MAX_TRADES}"
-        await application.bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='HTML')
-    except Exception as e:
-        print(f"Open Error: {e}")
+        text = build_advanced_dash()
+        if bot_state['dash_msg_id'] is None:
+            msg = await app.bot.send_message(TELEGRAM_CHAT_ID, text, parse_mode='HTML')
+            bot_state['dash_msg_id'] = msg.message_id
+        else:
+            await app.bot.edit_message_text(text, TELEGRAM_CHAT_ID, bot_state['dash_msg_id'], parse_mode='HTML')
+    except: pass
 
-async def close_position(pos, price, application):
-    try:
-        await exchange.create_market_sell_order(SYMBOL, POSITION_SIZE)
-        pnl = (price - pos['entry_price']) * POSITION_SIZE
-        fee_cost = (POSITION_SIZE * price) * ROUND_TRIP_FEE
-        net_profit = pnl - fee_cost
-        
-        bot_state['virtual_balance'] += net_profit
-        bot_state['realized_pnl'] += net_profit
-        bot_state['trades_count'] += 1
-        bot_state['positions'].remove(pos)
-        
-        msg = (f"🔴 <b>POSITION CLOSED</b>\n"
-               f"Profit: ${net_profit:.4f}\n"
-               f"Wallet: ${bot_state['virtual_balance']:.2f}")
-        await application.bot.send_message(TELEGRAM_CHAT_ID, msg, parse_mode='HTML')
-    except Exception as e:
-        print(f"Close Error: {e}")
-
-# ===== MAIN LOOP =====
-async def trading_loop(application):
-    print("🚀 MULTI-TRADE SNIPER ACTIVE...")
+async def ai_engine(app):
+    print("🚀 AI ALPHA v2 STARTING...")
     while True:
         try:
-            ohlcv = await exchange.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=50)
-            df = pd.DataFrame(ohlcv, columns=['ts', 'open', 'high', 'low', 'close', 'vol'])
-            df['rsi'] = calculate_rsi(df['close'], 14)
-            
             ticker = await exchange.fetch_ticker(SYMBOL)
             bot_state['last_price'] = ticker['last']
-            current_rsi = df['rsi'].iloc[-1]
+            price = ticker['last']
             
-            # 1. CHECK FOR NEW ENTRIES
-            # Strategy: Only buy if RSI < 30 and we haven't traded in 10 minutes
-            time_since_last = datetime.now() - bot_state['last_trade_time']
-            if len(bot_state['positions']) < MAX_TRADES and current_rsi < 30 and time_since_last.seconds > 600:
-                await open_position(bot_state['last_price'], application)
+            # AI DATA CRUNCH
+            ohlcv = await exchange.fetch_ohlcv(SYMBOL, '1m', limit=30)
+            df = pd.DataFrame(ohlcv, columns=['t','o','h','l','c','v'])
             
-            # 2. CHECK ALL OPEN POSITIONS FOR PROFIT
-            for pos in bot_state['positions'][:]: # Use slice to avoid list mutation errors
-                profit_pct = (bot_state['last_price'] - pos['entry_price']) / pos['entry_price']
-                
-                # GUARANTEED PROFIT RULE:
-                # Sell only if RSI is high (overbought) OR we hit the +0.5% target
-                if profit_pct >= MIN_PROFIT_TARGET or current_rsi > 70:
-                    # Double check: Never sell at a loss unless it's an emergency (-2%)
-                    if profit_pct > 0.002 or profit_pct < -0.02:
-                        await close_position(pos, bot_state['last_price'], application)
+            # Predictive Indicator: Kalman-style EMA
+            fast_ema = df['c'].ewm(span=5).mean().iloc[-1]
+            slow_ema = df['c'].ewm(span=15).mean().iloc[-1]
+            bot_state['trend'] = "BULL" if fast_ema > slow_ema else "BEAR"
 
-            await asyncio.sleep(20) 
+            # 1. SMART ENTRY (DCA Gapping)
+            if len(bot_state['positions']) < MAX_SLOTS:
+                # Only buy if price is below fast EMA (Mean Reversion)
+                if price < fast_ema * 0.9995: 
+                    await exchange.create_market_buy_order(SYMBOL, POSITION_SIZE)
+                    bot_state['positions'].append({"entry": price, "id": str(uuid.uuid4())[:3]})
+
+            # 2. SMART EXIT (Trailing-style)
+            for p in bot_state['positions'][:]:
+                profit_pct = (price - p['entry']) / p['entry']
+                
+                # Dynamic TP: If trend is BULL, wait for 0.4%, if BEAR, exit at 0.2%
+                target = 0.004 if bot_state['trend'] == "BULL" else 0.002
+                
+                if profit_pct >= target:
+                    await exchange.create_market_sell_order(SYMBOL, POSITION_SIZE)
+                    net = (POSITION_SIZE * price * profit_pct) - (POSITION_SIZE * price * 0.001)
+                    bot_state['pnl'] += net
+                    bot_state['wins'] += 1
+                    bot_state['positions'].remove(p)
+
+            await update_terminal(app)
+            await asyncio.sleep(1.5) # Hyper-refresh
         except Exception as e:
-            print(f"Loop error: {e}")
-            await asyncio.sleep(10)
+            await asyncio.sleep(5)
 
 async def main():
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("status", status_command))
     async with app:
         await app.initialize()
         await app.start()
         await app.updater.start_polling(drop_pending_updates=True)
-        await trading_loop(app)
+        await ai_engine(app)
 
 if __name__ == "__main__":
     asyncio.run(main())
+
