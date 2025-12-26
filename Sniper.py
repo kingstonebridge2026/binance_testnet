@@ -45,6 +45,15 @@ class AlphaSniper:
         self.is_running = True
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
         self.logger = logging.getLogger("Sniper")
+    async def get_bot_status(self):
+        """Send a summary to Telegram every 4 hours"""
+        total_pos = len(self.positions)
+        msg = f"📊 <b>Sniper Status Update</b>\n"
+        msg += f"Active Trades: {total_pos}/{Config.MAX_SLOTS}\n"
+        msg += f"Banked PnL: ${self.banked_pnl:.2f}\n"
+        msg += f"Market: {'TESTNET' if self.exchange.set_sandbox_mode else 'LIVE'}"
+        await self.send_telegram(msg)
+
 
     async def send_telegram(self, message):
         url = f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/sendMessage"
