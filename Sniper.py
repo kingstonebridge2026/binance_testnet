@@ -39,7 +39,7 @@ class AlphaSniper:
             'apiKey': Config.BINANCE_API_KEY,
             'secret': Config.BINANCE_SECRET,
             'enableRateLimit': True,
-            'options': {'defaultType': 'spot'}
+            'options': {'defaultType': 'futures'}
         })
         self.exchange.set_sandbox_mode(True) 
         self.positions = []
