@@ -10,6 +10,7 @@ import aiohttp
 from datetime import datetime
 
 # ==================== CONFIGURATION ====================
+# ==================== UPDATED CONFIGURATION ====================
 class Config:
     BINANCE_API_KEY = "0hb4IO19WSbyO6VlM8S0Aa8tWwHSYhtQhDRoOG70iu912J95qm7HhtRspAoykSml"
     BINANCE_SECRET = "RE8tftdsuG4MzcMfR4VNy6yvkho27qDMGiLZ6yR4cHXRWmCq1sV5AfBmgIIH06dK"
@@ -19,17 +20,19 @@ class Config:
     SYMBOLS = [
         "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", 
         "ADA/USDT", "AVAX/USDT", "DOGE/USDT", "DOT/USDT", "LINK/USDT",
-        "MATIC/USDT", "NEAR/USDT", "LTC/USDT", "UNI/USDT", "APT/USDT",
+        "POL/USDT", "NEAR/USDT", "LTC/USDT", "UNI/USDT", "APT/USDT",  # Updated POL
         "ARB/USDT", "OP/USDT", "INJ/USDT", "TIA/USDT", "SUI/USDT"
     ]
     
     BASE_POSITION_USD = 50.0  
     MAX_SLOTS = 15            
     
-    # Strategy settings
-    RSI_BUY_LEVEL = 30       # Buy when oversold
-    TARGET_PROFIT = 0.006    # 0.6%
-    STOP_LOSS = 0.012        # 1.2%
+    # Aggressive Strategy Settings
+    RSI_BUY_LEVEL = 35       # Increased from 30 for more action
+    Z_SCORE_BUY = -1.5       # Increased from -2.0 for more action
+    TARGET_PROFIT = 0.008    # 0.8% (Slightly higher to cover fees)
+    STOP_LOSS = 0.015        # 1.5%
+        # 1.2%
 
 # ==================== TRADING CORE ====================
 class AlphaSniper:
