@@ -11,8 +11,8 @@ from datetime import datetime
 
 # ==================== CONFIGURATION ====================
 class Config:
-    BINANCE_API_KEY = "lZzLmMQat8xJtSsx3lJ66R1sM1A1TNUwQPW5TQVOMIamEpMyxoCTOmCsoNiZwZN3"
-    BINANCE_SECRET = "OWDUmTbD5W19srkrFp24AsgI9pzwYBEM5I3ouZPJ7QcDbBvPkK7XwUXfUU3fxzvv"
+    BINANCE_API_KEY = "r6hhHQubpwwnDYkYhhdSlk3MQPjTomUggf59gfXJ21hnBcfq3K4BIoSd1eE91V3N"
+    BINANCE_SECRET = "B7ioAXzVHyYlxPOz3AtxzMC6FQBZaRj6i8A9FenSbsK8rBeCdGZHDhX6Dti22F2x"
     TELEGRAM_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
     TELEGRAM_CHAT_ID = "5665906172"
     
