@@ -23,7 +23,7 @@ class Config:
         "ARB/USDT", "OP/USDT", "INJ/USDT", "TIA/USDT", "SUI/USDT"
     ]
     
-    BASE_POSITION_USD = 100  
+    BASE_POSITION_USD = 50
     MAX_SLOTS = 15            
     
     # Aggressive Strategy Settings
