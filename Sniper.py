@@ -8,7 +8,6 @@ import aiohttp
 
 # ==================== CONFIGURATION ====================
 class Config:
-    # Use your existing keys here
     BINANCE_API_KEY = "r6hhHQubpwwnDYkYhhdSlk3MQPjTomUggf59gfXJ21hnBcfq3K4BIoSd1eE91V3N"
     BINANCE_SECRET = "B7ioAXzVHyYlxPOz3AtxzMC6FQBZaRj6i8A9FenSbsK8rBeCdGZHDhX6Dti22F2x"
     TELEGRAM_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
@@ -23,8 +22,6 @@ class Config:
     
     BASE_POSITION_USD = 50
     MAX_SLOTS = 15            
-    
-    # Aggressive Strategy Settings
     RSI_BUY_LEVEL = 35       
     Z_SCORE_BUY = -1.5       
     TARGET_PROFIT = 0.008    
@@ -33,20 +30,21 @@ class Config:
 # ==================== TRADING CORE ====================
 class AlphaSniper:
     def __init__(self):
+        # Initialize without set_sandbox_mode to avoid FAPI errors
         self.exchange = ccxt.binance({
             'apiKey': Config.BINANCE_API_KEY,
             'secret': Config.BINANCE_SECRET,
             'enableRateLimit': True,
             'options': {
                 'defaultType': 'spot',
-                'fetchCurrencies': False  # CRITICAL: Skips SAPI calls that fail on testnet
+                'fetchCurrencies': False
             }
         })
         
-        # Point to the NEW official Demo/Testnet API
+        # USE THE NEW 2025 DEMO ENDPOINTS
         self.exchange.urls['api'] = {
-            'public': 'https://testnet.binance.vision/api',
-            'private': 'https://testnet.binance.vision/api',
+            'public': 'https://demo-api.binance.com/api',
+            'private': 'https://demo-api.binance.com/api',
         }
         
         self.positions = []
@@ -59,11 +57,7 @@ class AlphaSniper:
         url = f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/sendMessage"
         try:
             async with aiohttp.ClientSession() as session:
-                await session.post(url, json={
-                    "chat_id": Config.TELEGRAM_CHAT_ID, 
-                    "text": message, 
-                    "parse_mode": "HTML"
-                })
+                await session.post(url, json={"chat_id": Config.TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"})
         except Exception as e:
             self.logger.error(f"Telegram Error: {e}")
 
@@ -75,17 +69,15 @@ class AlphaSniper:
         return df.iloc[-1]
 
     async def monitor_markets(self):
-        await self.send_telegram("🚀 <b>Sniper Online (Spot Testnet)</b>\nWaiting for dips...")
+        await self.send_telegram("🚀 <b>Sniper Online</b>\nNew 2025 Demo API Active.")
         
         while self.is_running:
-            try:
-                # We skip balance check here if it keeps causing SAPI errors
-                # The bot will just fail the order if balance is 0, which is fine for testing
-                for symbol in Config.SYMBOLS:
+            for symbol in Config.SYMBOLS:
+                try:
                     if len(self.positions) >= Config.MAX_SLOTS: break
                     if any(p['symbol'] == symbol for p in self.positions): continue
 
-                    # Fetch market data (This uses Public API, which usually works)
+                    # Market data remains public
                     ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=50)
                     df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'volume'])
                     sig = self.get_signals(df)
@@ -98,14 +90,14 @@ class AlphaSniper:
                         price = ticker['last']
                         amt = Config.BASE_POSITION_USD / price
                         
+                        # Market Buy
                         await self.exchange.create_market_buy_order(symbol, amt)
                         self.positions.append({'symbol': symbol, 'entry': price, 'amt': amt})
-                        await self.send_telegram(f"🎯 <b>BUY: {symbol}</b>\nPrice: {price}\nRSI: {sig['rsi']:.1f}")
+                        await self.send_telegram(f"🎯 <b>BUY: {symbol}</b>\nPrice: {price}")
 
                     await asyncio.sleep(0.5)
-            except Exception as e:
-                self.logger.error(f"Loop Error: {e}")
-            
+                except Exception as e:
+                    self.logger.error(f"Error {symbol}: {e}")
             await asyncio.sleep(20)
 
     async def manage_risk(self, symbol, price):
