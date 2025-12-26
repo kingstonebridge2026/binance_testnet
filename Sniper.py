@@ -3,7 +3,6 @@ import pandas as pd
 import asyncio
 import ccxt.async_support as ccxt
 import json
-import websockets
 import logging
 import ta
 import aiohttp
@@ -39,9 +38,14 @@ class AlphaSniper:
             'apiKey': Config.BINANCE_API_KEY,
             'secret': Config.BINANCE_SECRET,
             'enableRateLimit': True,
-            'options': {'defaultType': 'futures'}
+            'options': {'defaultType': 'spot'}  # CHANGED: Set to spot
         })
-        self.exchange.set_sandbox_mode(True) 
+        # Force the Spot Testnet URL to fix the -2015 "Invalid Key" error
+        self.exchange.urls['api'] = {
+            'public': 'https://testnet.binance.vision/api',
+            'private': 'https://testnet.binance.vision/api',
+        }
+        
         self.positions = []
         self.banked_pnl = 0.0
         self.is_running = True
@@ -49,7 +53,6 @@ class AlphaSniper:
         self.logger = logging.getLogger("Sniper")
 
     async def send_telegram(self, message):
-        """Fixed: This function must be inside the class"""
         url = f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/sendMessage"
         try:
             async with aiohttp.ClientSession() as session:
@@ -63,14 +66,12 @@ class AlphaSniper:
 
     def get_signals(self, df):
         df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
-        # Calculate Z-Score safely
         rolling_mean = df['close'].rolling(20).mean()
         rolling_std = df['close'].rolling(20).std()
         df['zscore'] = (df['close'] - rolling_mean) / rolling_std
         return df.iloc[-1]
 
     async def daily_reporter(self):
-        """Sends a summary report every 24 hours"""
         while self.is_running:
             await asyncio.sleep(86400)
             status = "✅ WINNING" if self.banked_pnl > 0 else "❌ DOWN/NEUTRAL"
@@ -83,10 +84,21 @@ class AlphaSniper:
             await self.send_telegram(report)
 
     async def monitor_markets(self):
-        await self.send_telegram("🚀 <b>Sniper Online (Aggressive)</b>\nReady to hunt dips.")
+        await self.send_telegram("🚀 <b>Sniper Online (Spot Testnet)</b>\nMonitoring 20 coins for dips.")
         asyncio.create_task(self.daily_reporter())
         
         while self.is_running:
+            # Add balance check to avoid spamming "Insufficient Balance" errors
+            try:
+                balance = await self.exchange.fetch_balance()
+                usdt_free = balance.get('USDT', {}).get('free', 0)
+                if usdt_free < Config.BASE_POSITION_USD:
+                    self.logger.warning(f"Waiting for funds... Current USDT: {usdt_free}")
+                    await asyncio.sleep(60)
+                    continue
+            except Exception as e:
+                self.logger.error(f"Balance check error: {e}")
+
             for symbol in Config.SYMBOLS:
                 try:
                     if len(self.positions) >= Config.MAX_SLOTS: break
@@ -106,7 +118,7 @@ class AlphaSniper:
                         
                         await self.exchange.create_market_buy_order(symbol, amt)
                         self.positions.append({'symbol': symbol, 'entry': price, 'amt': amt})
-                        await self.send_telegram(f"🎯 <b>BUY: {symbol}</b>\nRSI: {sig['rsi']:.1f}")
+                        await self.send_telegram(f"🎯 <b>BUY: {symbol}</b>\nPrice: {price}\nRSI: {sig['rsi']:.1f}")
 
                     await asyncio.sleep(0.5)
                 except Exception as e:
@@ -129,7 +141,6 @@ class AlphaSniper:
                         self.logger.error(f"Sell Error: {e}")
 
 async def price_stream(bot):
-    # This keeps the bot updated on current prices for risk management
     while bot.is_running:
         for pos in bot.positions:
             try:
