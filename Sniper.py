@@ -2,14 +2,13 @@ import numpy as np
 import pandas as pd
 import asyncio
 import ccxt.async_support as ccxt
-import json
 import logging
 import ta
 import aiohttp
-from datetime import datetime
 
 # ==================== CONFIGURATION ====================
 class Config:
+    # Use your existing keys here
     BINANCE_API_KEY = "r6hhHQubpwwnDYkYhhdSlk3MQPjTomUggf59gfXJ21hnBcfq3K4BIoSd1eE91V3N"
     BINANCE_SECRET = "B7ioAXzVHyYlxPOz3AtxzMC6FQBZaRj6i8A9FenSbsK8rBeCdGZHDhX6Dti22F2x"
     TELEGRAM_TOKEN = "8560134874:AAHF4efOAdsg2Y01eBHF-2DzEUNf9WAdniA"
@@ -38,9 +37,13 @@ class AlphaSniper:
             'apiKey': Config.BINANCE_API_KEY,
             'secret': Config.BINANCE_SECRET,
             'enableRateLimit': True,
-            'options': {'defaultType': 'spot'}  # CHANGED: Set to spot
+            'options': {
+                'defaultType': 'spot',
+                'fetchCurrencies': False  # CRITICAL: Skips SAPI calls that fail on testnet
+            }
         })
-        # Force the Spot Testnet URL to fix the -2015 "Invalid Key" error
+        
+        # Point to the NEW official Demo/Testnet API
         self.exchange.urls['api'] = {
             'public': 'https://testnet.binance.vision/api',
             'private': 'https://testnet.binance.vision/api',
@@ -71,39 +74,18 @@ class AlphaSniper:
         df['zscore'] = (df['close'] - rolling_mean) / rolling_std
         return df.iloc[-1]
 
-    async def daily_reporter(self):
-        while self.is_running:
-            await asyncio.sleep(86400)
-            status = "✅ WINNING" if self.banked_pnl > 0 else "❌ DOWN/NEUTRAL"
-            report = (
-                f"📅 <b>Daily Sniper Report</b>\n"
-                f"Status: {status}\n"
-                f"Realized PnL: ${self.banked_pnl:.2f}\n"
-                f"Open Slots: {len(self.positions)}/{Config.MAX_SLOTS}"
-            )
-            await self.send_telegram(report)
-
     async def monitor_markets(self):
-        await self.send_telegram("🚀 <b>Sniper Online (Spot Testnet)</b>\nMonitoring 20 coins for dips.")
-        asyncio.create_task(self.daily_reporter())
+        await self.send_telegram("🚀 <b>Sniper Online (Spot Testnet)</b>\nWaiting for dips...")
         
         while self.is_running:
-            # Add balance check to avoid spamming "Insufficient Balance" errors
             try:
-                balance = await self.exchange.fetch_balance()
-                usdt_free = balance.get('USDT', {}).get('free', 0)
-                if usdt_free < Config.BASE_POSITION_USD:
-                    self.logger.warning(f"Waiting for funds... Current USDT: {usdt_free}")
-                    await asyncio.sleep(60)
-                    continue
-            except Exception as e:
-                self.logger.error(f"Balance check error: {e}")
-
-            for symbol in Config.SYMBOLS:
-                try:
+                # We skip balance check here if it keeps causing SAPI errors
+                # The bot will just fail the order if balance is 0, which is fine for testing
+                for symbol in Config.SYMBOLS:
                     if len(self.positions) >= Config.MAX_SLOTS: break
                     if any(p['symbol'] == symbol for p in self.positions): continue
 
+                    # Fetch market data (This uses Public API, which usually works)
                     ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=50)
                     df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'volume'])
                     sig = self.get_signals(df)
@@ -121,8 +103,9 @@ class AlphaSniper:
                         await self.send_telegram(f"🎯 <b>BUY: {symbol}</b>\nPrice: {price}\nRSI: {sig['rsi']:.1f}")
 
                     await asyncio.sleep(0.5)
-                except Exception as e:
-                    self.logger.error(f"Error {symbol}: {e}")
+            except Exception as e:
+                self.logger.error(f"Loop Error: {e}")
+            
             await asyncio.sleep(20)
 
     async def manage_risk(self, symbol, price):
