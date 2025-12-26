@@ -35,6 +35,8 @@ class Config:
         # 1.2%
 
 # ==================== TRADING CORE ====================
+import time
+
 class AlphaSniper:
     def __init__(self):
         self.exchange = ccxt.binance({
@@ -43,47 +45,50 @@ class AlphaSniper:
             'enableRateLimit': True,
             'options': {'defaultType': 'spot'}
         })
-        self.exchange.set_sandbox_mode(True) # KEEP TRUE FOR TESTNET
+        self.exchange.set_sandbox_mode(True) 
         self.positions = []
+        self.banked_pnl = 0.0  # Tracks realized profit
         self.is_running = True
-        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
         self.logger = logging.getLogger("Sniper")
-    async def get_bot_status(self):
-        """Send a summary to Telegram every 4 hours"""
-        total_pos = len(self.positions)
-        msg = f"📊 <b>Sniper Status Update</b>\n"
-        msg += f"Active Trades: {total_pos}/{Config.MAX_SLOTS}\n"
-        msg += f"Banked PnL: ${self.banked_pnl:.2f}\n"
-        msg += f"Market: {'TESTNET' if self.exchange.set_sandbox_mode else 'LIVE'}"
-        await self.send_telegram(msg)
 
+    # ... [Keep your send_telegram and engineer_features functions] ...
 
-    async def send_telegram(self, message):
-        url = f"https://api.telegram.org/bot{Config.TELEGRAM_TOKEN}/sendMessage"
-        async with aiohttp.ClientSession() as session:
-            await session.post(url, json={"chat_id": Config.TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"})
-
-    def get_signals(self, df):
-        df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
-        df['zscore'] = (df['close'] - df['close'].rolling(20).mean()) / df['close'].rolling(20).std()
-        return df.iloc[-1]
+    async def daily_reporter(self):
+        """Sends a summary report every 24 hours"""
+        while self.is_running:
+            # Wait 24 hours (86400 seconds)
+            await asyncio.sleep(86400)
+            status = "✅ WINNING" if self.banked_pnl > 0 else "❌ DOWN"
+            report = (
+                f"📅 <b>Daily Sniper Report</b>\n"
+                f"Status: {status}\n"
+                f"Realized PnL: ${self.banked_pnl:.2f}\n"
+                f"Open Slots: {len(self.positions)}/{Config.MAX_SLOTS}\n"
+                f"Mode: BINANCE TESTNET"
+            )
+            await self.send_telegram(report)
 
     async def monitor_markets(self):
-        await self.send_telegram("🚀 <b>Sniper Online</b>\nStable Mode: No-RAM Training Active.")
+        await self.send_telegram("🚀 <b>Sniper Online (Aggressive Mode)</b>\nRSI: 35 | Z: -1.5")
+        # Start the reporting task in the background
+        asyncio.create_task(self.daily_reporter())
+        
         while self.is_running:
             for symbol in Config.SYMBOLS:
                 try:
-                    if len(self.positions) >= Config.MAX_SLOTS: break
+                    # Logic to skip if already in position or slots full
                     if any(p['symbol'] == symbol for p in self.positions): continue
-
+                    
                     ohlcv = await self.exchange.fetch_ohlcv(symbol, '1m', limit=50)
                     df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'volume'])
                     sig = self.get_signals(df)
                     
-                    self.logger.info(f"Checking {symbol} | RSI: {sig['rsi']:.2f} | Z: {sig['zscore']:.2f}")
+                    # Handle "NaN" data safely
+                    if np.isnan(sig['rsi']) or np.isnan(sig['zscore']):
+                        continue
 
-                    # Logic: Mean Reversion (Buy low Z-score + low RSI)
-                    if sig['rsi'] < Config.RSI_BUY_LEVEL and sig['zscore'] < -2.0:
+                    # Aggressive Buy Signal
+                    if sig['rsi'] < Config.RSI_BUY_LEVEL and sig['zscore'] < Config.Z_SCORE_BUY:
                         ticker = await self.exchange.fetch_ticker(symbol)
                         price = ticker['last']
                         amt = Config.BASE_POSITION_USD / price
@@ -92,7 +97,6 @@ class AlphaSniper:
                         self.positions.append({'symbol': symbol, 'entry': price, 'amt': amt})
                         await self.send_telegram(f"🎯 <b>BUY: {symbol}</b>\nPrice: {price}\nRSI: {sig['rsi']:.1f}")
 
-                    await asyncio.sleep(0.5)
                 except Exception as e:
                     self.logger.error(f"Error {symbol}: {e}")
             await asyncio.sleep(15)
@@ -100,12 +104,18 @@ class AlphaSniper:
     async def manage_risk(self, symbol, price):
         for pos in self.positions[:]:
             if pos['symbol'] == symbol:
-                pnl = (price - pos['entry']) / pos['entry']
-                if pnl > Config.TARGET_PROFIT or pnl < -Config.STOP_LOSS:
+                pnl_pct = (price - pos['entry']) / pos['entry']
+                
+                # Check Take Profit or Stop Loss
+                if pnl_pct > Config.TARGET_PROFIT or pnl_pct < -Config.STOP_LOSS:
                     await self.exchange.create_market_sell_order(symbol, pos['amt'])
+                    profit_usd = (price - pos['entry']) * pos['amt']
+                    self.banked_pnl += profit_usd
                     self.positions.remove(pos)
-                    status = "PROFIT" if pnl > 0 else "LOSS"
-                    await self.send_telegram(f"💰 <b>SELL {symbol}</b>\nResult: {status} ({pnl*100:.2f}%)")
+                    
+                    emoji = "💰" if pnl_pct > 0 else "📉"
+                    await self.send_telegram(f"{emoji} <b>CLOSED {symbol}</b>\nProfit: ${profit_usd:.2f} ({pnl_pct*100:.2f}%)")
+
 
 async def price_stream(bot):
     streams = [f"{s.replace('/', '').lower()}@ticker" for s in Config.SYMBOLS]
